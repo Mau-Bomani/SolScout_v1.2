@@ -1,0 +1,220 @@
+version: '3.8'
+
+networks:
+  soulscout_net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redis_data:
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: soulscout_postgres
+    restart: unless-stopped
+    networks:
+      - soulscout_net
+    env_file:
+      - env/postgres.env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./ops/retention.sql:/docker-entrypoint-initdb.d/99-retention.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  redis:
+    image: redis:7
+    container_name: soulscout_redis
+    restart: unless-stopped
+    networks:
+      - soulscout_net
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  tg_gateway:
+    build:
+      context: ./tg_gateway
+      dockerfile: Dockerfile
+    container_name: soulscout_gateway
+    restart: unless-stopped
+    networks:
+      - soulscout_net
+    ports:
+      - "8080:8080"
+    env_file:
+      - env/tg_gateway.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  portfolio:
+    build:
+      context: ./portfolio
+      dockerfile: Dockerfile
+    container_name: soulscout_portfolio
+    restart: unless-stopped
+    networks:
+      - soulscout_net
+    ports:
+      - "8081:8081"
+    env_file:
+      - env/portfolio.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - PG_DSN=postgresql://soulscout:${POSTGRES_PASSWORD}@postgres:5432/soulsct
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  ingestor:
+    build:
+      context: ./ingestor
+      dockerfile: Dockerfile
+    container_name: soulscout_ingestor
+    restart: unless-stopped
+    networks:
+      - soulscout_net
+    ports:
+      - "8082:8082"
+    env_file:
+      - env/ingestor.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - PG_DSN=postgresql://soulscout:${POSTGRES_PASSWORD}@postgres:5432/soulsct
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  analytics:
+    build:
+      context: ./analytics
+      dockerfile: Dockerfile
+    container_name: soulscout_analytics
+    restart: unless-stopped
+    networks:
+      - soulscout_net
+    ports:
+      - "8083:8083"
+    env_file:
+      - env/analytics.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - PG_DSN=postgresql://soulscout:${POSTGRES_PASSWORD}@postgres:5432/soulsct
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ingestor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    mem_limit: 768m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  notifier:
+    build:
+      context: ./notifier
+      dockerfile: Dockerfile
+    container_name: soulscout_notifier
+    restart: unless-stopped
+    networks:
+      - soulscout_net
+    ports:
+      - "8084:8084"
+    env_file:
+      - env/notifier.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - PG_DSN=postgresql://soulscout:${POSTGRES_PASSWORD}@postgres:5432/soulsct
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      analytics:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8084/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
